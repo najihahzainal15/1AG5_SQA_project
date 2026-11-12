@@ -22,11 +22,12 @@ if (ini_get("session.use_cookies")) {
 // 4. Destroy the session completely
 session_destroy();
 
+
 // 5. Clear the "Keep me logged in" cookie if it exists
 if (isset($_COOKIE['user_login'])) {
     setcookie("user_login", "", time() - 3600, "/");
 }
 
 // 6. Redirect back to the login page (Absolute path to be safe)
-header("Location: /1AG5_SQA_project/auth/login.php");
+header("Location: login.php");
 exit();
