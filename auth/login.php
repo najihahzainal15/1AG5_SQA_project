@@ -68,7 +68,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             </svg></span>
                         <input name="password" type="password" placeholder="Password" required>
                     </div>
-                    <label class="tg">Keep me logged in <input type="checkbox" name="keep_logged_in"><i></i></label>
                     <button type="submit" class="lbtn">Log in</button>
                 </form>
             </div>

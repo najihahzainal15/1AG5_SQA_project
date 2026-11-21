@@ -1,5 +1,5 @@
 <?php
-// 1. Initialize session securely (QAS-2: Session Integrity)
+// Initialize session securely (QAS-2: Session Integrity)
 if (session_status() === PHP_SESSION_NONE) {
     session_set_cookie_params([
         'lifetime' => 0,
@@ -13,7 +13,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
 require_once __DIR__ . '/../config/db_connection.php';
 
-// 2. Define Variables & Strict Role Check (QAS-2: Access Control)
+// Define Variables & Strict Role Check (QAS-2: Access Control)
 $pageTitle = 'Equipment';
 $activePage = 'eq';
 
@@ -27,13 +27,11 @@ $isAdmin = ($_SESSION['role'] === 'admin');
 $errors = [];
 $success_msg = '';
 
-// 3. Generate CSRF Token (QAS-2: CSRF Prevention)
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrf_token = $_SESSION['csrf_token'];
 
-// 4. Handle Form Submissions (CRUD)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Verify CSRF Token
@@ -46,7 +44,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         die("Security Error: Unauthorized access. Only administrators can modify equipment.");
     }
 
-    // --- HANDLE ADD or EDIT ---
     if (isset($_POST['action']) && ($_POST['action'] == 'add' || $_POST['action'] == 'edit')) {
         // Sanitize Inputs
         $name = trim($_POST['equipment_name']);
@@ -77,7 +74,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // If no errors, save to database
         if (empty($errors)) {
             if ($_POST['action'] == 'add') {
                 $stmt = $pdo->prepare("INSERT INTO equipment (equipment_name, brand, category, serial_number, rental_rate, purchase_price, supplier_id, equipment_status, specifications) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -91,7 +87,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // --- HANDLE DELETE ---
     if (isset($_POST['action']) && $_POST['action'] == 'delete') {
         $id = $_POST['equipment_id'];
 
@@ -109,7 +104,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// 5. Fetch Data from Database
 $supStmt = $pdo->query("SELECT supplier_id, supplier_name FROM suppliers ORDER BY supplier_name");
 $suppliers = $supStmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -117,11 +111,9 @@ $stmt = $pdo->query("SELECT e.*, s.supplier_name FROM equipment e LEFT JOIN supp
 $equipment = $stmt->fetchAll(PDO::FETCH_ASSOC);
 if (!$equipment) $equipment = [];
 
-// 6. Include Navigation
 require_once '../includes/navigation.php';
 ?>
 
-<!-- 7. HTML Output -->
 <div class="hd">
     <div>
         <h1>Equipment <?= $isAdmin ? '' : '<span class="vo">View only</span>' ?></h1>
@@ -161,19 +153,19 @@ require_once '../includes/navigation.php';
             <circle cx="11" cy="11" r="8"></circle>
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
         </svg>
-        <input type="text" class="in" placeholder="Search equipment...">
+
+        <input type="text" id="searchInput" class="in" placeholder="Search equipment...">
     </div>
     <div class="sp"></div>
-    <select class="in">
+
+    <select id="categoryFilter" class="in">
         <option value="">All Category</option>
         <option value="Camera Body">Camera Body</option>
-        <option value="Lens">Lens</option>
-        <option value="Gimbal">Gimbal</option>
-        <option value="Lighting">Lighting</option>
         <option value="Audio">Audio</option>
         <option value="Accessories">Accessories</option>
     </select>
-    <select class="in">
+
+    <select id="statusFilter" class="in">
         <option value="">All Status</option>
         <option value="available">Available</option>
         <option value="rented">Rented</option>
@@ -182,13 +174,12 @@ require_once '../includes/navigation.php';
     </select>
 </div>
 
-<!-- Data Table -->
 <div class="tw">
-    <table>
+    <table id="equipmentTable">
         <thead>
             <tr>
                 <th>ID</th>
-                <th>Euipment Name</th>
+                <th>Equipment Name</th>
                 <th>Category</th>
                 <th>Rate / day</th>
                 <th>Supplier</th>
@@ -201,7 +192,8 @@ require_once '../includes/navigation.php';
                 <?php foreach ($equipment as $e): ?>
                     <?php $rowId = "row-" . $e['equipment_id']; ?>
 
-                    <tr class="m">
+                    <!-- Added class 'data-row' and data attributes for filtering -->
+                    <tr class="m data-row" data-category="<?= htmlspecialchars($e['category']) ?>" data-status="<?= strtolower($e['equipment_status']) ?>">
                         <td><span class="id">EQ-<?= str_pad($e['equipment_id'], 3, '0', STR_PAD_LEFT) ?></span></td>
                         <td><?= htmlspecialchars($e['equipment_name']) ?></td>
                         <td><?= htmlspecialchars($e['category']) ?></td>
@@ -240,8 +232,8 @@ require_once '../includes/navigation.php';
                         </td>
                     </tr>
 
-                    <!-- Expanded Row -->
-                    <tr id="<?= $rowId ?>" style="display: none; background-color: #f8fafc;">
+                    <!-- Expanded Row (Added class 'expand-row' to hide it during filtering) -->
+                    <tr id="<?= $rowId ?>" class="expand-row" style="display: none; background-color: #f8fafc;">
                         <td colspan="7" style="padding: 15px 20px; border-bottom: 1px solid #e2e8f0;">
                             <div style="display: flex; gap: 40px; align-items: center; font-size: 13px; color: #475569;">
                                 <div style="display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px;">
@@ -290,7 +282,6 @@ require_once '../includes/navigation.php';
             <input type="hidden" name="action" id="formAction" value="add">
             <input type="hidden" name="equipment_id" id="formId" value="">
 
-            <!-- Custom CSS scoped to the modal to match prototype exactly -->
             <style>
                 #formModal label {
                     font-size: 13px;
@@ -324,7 +315,6 @@ require_once '../includes/navigation.php';
                     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
                 }
 
-                /* Custom arrow for selects */
                 #formModal select {
                     appearance: none;
                     background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23475569%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E");
@@ -348,9 +338,6 @@ require_once '../includes/navigation.php';
                     <label>Category *</label>
                     <select name="category" id="formCategory" required>
                         <option value="Camera Body">Camera Body</option>
-                        <option value="Lens">Lens</option>
-                        <option value="Gimbal">Gimbal</option>
-                        <option value="Lighting">Lighting</option>
                         <option value="Audio">Audio</option>
                         <option value="Accessories">Accessories</option>
                     </select>
@@ -450,7 +437,6 @@ require_once '../includes/navigation.php';
         document.getElementById('equipmentForm').reset();
         document.getElementById('formId').value = '';
 
-        // Reset borders
         var inputs = document.querySelectorAll('#formModal input, #formModal select, #formModal textarea');
         inputs.forEach(input => input.style.borderColor = '#cbd5e1');
 
@@ -461,7 +447,6 @@ require_once '../includes/navigation.php';
         document.getElementById('modalTitle').innerText = 'Edit Equipment';
         document.getElementById('formAction').value = 'edit';
 
-        // Populate text inputs
         document.getElementById('formId').value = data.equipment_id;
         document.getElementById('formName').value = data.equipment_name;
         document.getElementById('formBrand').value = data.brand;
@@ -470,7 +455,6 @@ require_once '../includes/navigation.php';
         document.getElementById('formPrice').value = data.purchase_price;
         document.getElementById('formSpecs').value = data.specifications || '';
 
-        // 1. Category Fix
         const categorySelect = document.getElementById('formCategory');
         let catExists = false;
         for (let i = 0; i < categorySelect.options.length; i++) {
@@ -485,13 +469,9 @@ require_once '../includes/navigation.php';
         }
         categorySelect.value = data.category;
 
-        // 2. Status Fix
         document.getElementById('formStatus').value = data.equipment_status;
-
-        // 3. Supplier Fix
         document.getElementById('formSupplier').value = data.supplier_id;
 
-        // Reset borders
         var inputs = document.querySelectorAll('#formModal input, #formModal select, #formModal textarea');
         inputs.forEach(input => input.style.borderColor = '#cbd5e1');
 
@@ -508,7 +488,51 @@ require_once '../includes/navigation.php';
         }
     }
 
-    // Contextual Inline Feedback (QAS-3 User Error Protection)
+    // ==========================================
+    // SEARCH & FILTER SCRIPT
+    // ==========================================
+    document.addEventListener('DOMContentLoaded', function() {
+        const searchInput = document.getElementById('searchInput');
+        const categoryFilter = document.getElementById('categoryFilter');
+        const statusFilter = document.getElementById('statusFilter');
+        const tableRows = document.querySelectorAll('.data-row');
+
+        function filterTable() {
+            const searchTerm = searchInput.value.toLowerCase();
+            const categoryTerm = categoryFilter.value.toLowerCase();
+            const statusTerm = statusFilter.value.toLowerCase();
+
+            tableRows.forEach(row => {
+                // Get data from row
+                const rowText = row.innerText.toLowerCase();
+                const rowCategory = row.getAttribute('data-category').toLowerCase();
+                const rowStatus = row.getAttribute('data-status').toLowerCase();
+
+                // Check conditions
+                const matchesSearch = rowText.includes(searchTerm);
+                const matchesCategory = categoryTerm === "" || rowCategory === categoryTerm;
+                const matchesStatus = statusTerm === "" || rowStatus === statusTerm;
+
+                // Show/hide row
+                if (matchesSearch && matchesCategory && matchesStatus) {
+                    row.style.display = ''; // Show
+                } else {
+                    row.style.display = 'none'; // Hide
+
+                    // Also hide the expanded row underneath it if it's open
+                    const nextRow = row.nextElementSibling;
+                    if (nextRow && nextRow.classList.contains('expand-row')) {
+                        nextRow.style.display = 'none';
+                    }
+                }
+            });
+        }
+
+        searchInput.addEventListener('keyup', filterTable);
+        categoryFilter.addEventListener('change', filterTable);
+        statusFilter.addEventListener('change', filterTable);
+    });
+
     document.getElementById('equipmentForm').addEventListener('submit', function(e) {
         let isValid = true;
         const inputs = ['formName', 'formBrand', 'formSerial', 'formRental', 'formPrice', 'formSupplier'];
