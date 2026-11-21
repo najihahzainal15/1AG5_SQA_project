@@ -105,6 +105,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!validDate($start)) $errors[] = "A valid rental start date is required.";
         if (!validDate($end)) $errors[] = "A valid rental end date is required.";
         if (!in_array($status, RENTAL_STATUSES, true)) $errors[] = "Please select a valid status.";
+
+        // Only administrators may cancel a booking (a rental already cancelled can be saved unchanged)
+        if (!$isAdmin && $status === 'Cancelled') {
+            $prev = '';
+            if ($action === 'edit') {
+                $p = $pdo->prepare("SELECT rental_status FROM rentals WHERE rental_id = ?");
+                $p->execute([$id]);
+                $prev = (string)$p->fetchColumn();
+            }
+            if ($prev !== 'Cancelled') $errors[] = "Only administrators can cancel a booking.";
+        }
         if (!isset(DELIVERY_METHODS[$method])) $errors[] = "Please choose Pickup or Delivery.";
         if ($method === 'delivery' && $address === '') $errors[] = "Delivery address is required when the delivery method is Delivery.";
         if ($method === 'pickup') $address = '';
@@ -218,6 +229,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+// 5. Auto-flag overdue: Active rentals whose end date has passed become Overdue
+//    (equipment stays 'rented' since Overdue also counts as rented)
+date_default_timezone_set('Asia/Kuala_Lumpur');
+$pdo->prepare("UPDATE rentals SET rental_status = 'Overdue' WHERE rental_status = 'Active' AND end_date < ?")
+    ->execute([date('Y-m-d')]);
+
 // 5a. Auto-activate: Reserved rentals whose start date has arrived become Active
 //     (only while the rental period is still running), and equipment becomes 'rented'
 $today = date('Y-m-d');
@@ -239,6 +256,16 @@ $rentals = $pdo->query("SELECT r.*, e.equipment_name, e.rental_rate
     FROM rentals r LEFT JOIN equipment e ON r.equipment_id = e.equipment_id
     ORDER BY r.rental_id DESC")->fetchAll(PDO::FETCH_ASSOC);
 
+// Existing bookings for the instant date-clash check in the form (JS)
+$bookings = array_map(fn($r) => [
+    'id' => (int)$r['rental_id'],
+    'eq' => (int)$r['equipment_id'],
+    's' => $r['start_date'],
+    'e' => $r['end_date'],
+    'st' => $r['rental_status'],
+    'code' => 'R-' . str_pad($r['rental_id'], 4, '0', STR_PAD_LEFT)
+], $rentals);
+
 $statusBadge = ['Reserved' => 'Y', 'Active' => 'G', 'Overdue' => 'R', 'Returned' => 'G', 'Cancelled' => 'S'];
 
 // 6. Navigation
@@ -258,7 +285,7 @@ require_once '../includes/navigation.php';
     </button>
 </div>
 
-<?php if (!empty($errors)): ?>
+<?php if (!empty($errors) && !$reopen): ?>
     <div style="background: #fee2e2; color: #991b1b; padding: 15px; margin: 16px 0; border-radius: 5px; border: 1px solid #fecaca;">
         <strong>Please fix the following errors:</strong>
         <ul style="margin-top: 5px; margin-bottom: 0; padding-left: 20px;">
@@ -411,6 +438,17 @@ require_once '../includes/navigation.php';
 
         <h2 id="modalTitle" style="margin-top:0; font-size:22px; font-weight:700; color:#0f172a; margin-bottom:25px;">New Rental</h2>
 
+        <?php if ($reopen && !empty($errors)): ?>
+            <div style="background:#fee2e2; color:#991b1b; padding:12px 15px; margin-bottom:20px; border-radius:6px; border:1px solid #fecaca; font-size:13px;">
+                <strong>Please fix the following errors:</strong>
+                <ul style="margin:5px 0 0; padding-left:20px;">
+                    <?php foreach ($errors as $error): ?>
+                        <li><?= htmlspecialchars($error) ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
+        <?php endif; ?>
+
         <form method="POST" action="manage_rentals.php" id="rentalForm" novalidate>
             <input type="hidden" name="csrf_token" value="<?= $csrf_token ?>">
             <input type="hidden" name="action" id="formAction" value="add">
@@ -528,9 +566,9 @@ require_once '../includes/navigation.php';
                 </div>
                 <div>
                     <label>Status *</label>
-                    <select name="rental_status" id="formStatus">
+                    <select name="rental_status" id="formStatus" onchange="updateTotal()">
                         <?php foreach (RENTAL_STATUSES as $s): ?>
-                            <option value="<?= $s ?>"><?= $s ?></option>
+                            <option value="<?= $s ?>" <?= ($s === 'Cancelled' && !$isAdmin) ? 'disabled' : '' ?>><?= $s ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -538,6 +576,7 @@ require_once '../includes/navigation.php';
                     <label>Estimated Total</label>
                     <div id="totalPreview" style="padding:10px 12px; font-weight:600; color:#0f172a;">—</div>
                 </div>
+                <div id="dateWarn" style="grid-column: 1 / -1; display:none; background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:6px; padding:10px 12px; font-size:13px;"></div>
                 <div style="grid-column: 1 / -1;">
                     <label>Delivery Method *</label>
                     <div class="seg">
@@ -551,7 +590,7 @@ require_once '../includes/navigation.php';
                 </div>
             </div>
 
-            <div style="font-size:12px; color:#64748b; margin-bottom:22px;">ℹ Total cost is calculated automatically (days × daily rate). Saving updates the equipment status (Active/Overdue → Rented, Reserved → Reserved, Returned/Cancelled → Available).</div>
+            <div style="font-size:12px; color:#64748b; margin-bottom:22px;">ℹ Total cost is calculated automatically (days × daily rate).</div>
 
             <div style="text-align:right; display:flex; justify-content:flex-end; gap:12px;">
                 <button type="button" onclick="closeModal('formModal')" style="padding:10px 20px; background:#fff; border:1px solid #cbd5e1; color:#334155; border-radius:6px; cursor:pointer; font-weight:600; font-size:14px; font-family: 'Inter', sans-serif;">Cancel</button>
@@ -583,6 +622,8 @@ require_once '../includes/navigation.php';
 
 <!-- JavaScript -->
 <script>
+    const IS_ADMIN = <?= $isAdmin ? 'true' : 'false' ?>;
+
     function toggleRow(rowId) {
         var row = document.getElementById(rowId);
         row.style.display = (row.style.display === "none") ? "table-row" : "none";
@@ -607,8 +648,42 @@ require_once '../includes/navigation.php';
         document.getElementById('addressWrap').style.display = isDelivery ? 'block' : 'none';
     }
 
+    // Existing bookings (used for the instant date-clash warning)
+    var BOOKINGS = <?= json_encode($bookings, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+
+    // Returns true (and shows a warning) if this equipment is already booked on the chosen dates
+    function checkOverlap() {
+        var eq = parseInt(document.getElementById('formEquip').value, 10) || 0;
+        var s = document.getElementById('formStart').value;
+        var e = document.getElementById('formEnd').value;
+        var st = document.getElementById('formStatus').value;
+        var id = parseInt(document.getElementById('formId').value, 10) || 0;
+        var warn = document.getElementById('dateWarn');
+        var startEl = document.getElementById('formStart'),
+            endEl = document.getElementById('formEnd');
+
+        var hit = null;
+        if (eq && s && e && e >= s && st !== 'Returned' && st !== 'Cancelled') {
+            hit = BOOKINGS.find(function(b) {
+                return b.eq === eq && b.id !== id && b.st !== 'Returned' && b.st !== 'Cancelled' && s <= b.e && e >= b.s;
+            }) || null;
+        }
+
+        if (hit) {
+            warn.textContent = '⚠ This equipment is already booked from ' + hit.s + ' to ' + hit.e + ' (' + hit.code + '). Please choose different dates or another equipment.';
+            warn.style.display = 'block';
+            startEl.style.borderColor = endEl.style.borderColor = '#dc2626';
+        } else {
+            warn.style.display = 'none';
+            if (startEl.style.borderColor === 'rgb(220, 38, 38)') startEl.style.borderColor = '#cbd5e1';
+            if (endEl.style.borderColor === 'rgb(220, 38, 38)') endEl.style.borderColor = '#cbd5e1';
+        }
+        return !!hit;
+    }
+
     // Live estimate of total cost (server recalculates on save)
     function updateTotal() {
+        checkOverlap();
         var opt = document.getElementById('formEquip').selectedOptions[0];
         var s = document.getElementById('formStart').value;
         var e = document.getElementById('formEnd').value;
@@ -630,14 +705,17 @@ require_once '../includes/navigation.php';
         document.getElementById('formEquip').value = d.equipment_id || '';
         document.getElementById('formStart').value = d.start_date || '';
         document.getElementById('formEnd').value = d.end_date || '';
+        // Staff cannot choose Cancelled (unless the rental is already cancelled)
+        var cancelOpt = document.querySelector('#formStatus option[value="Cancelled"]');
+        if (cancelOpt && !IS_ADMIN) cancelOpt.disabled = (d.rental_status !== 'Cancelled');
         document.getElementById('formStatus').value = d.rental_status || 'Reserved';
         document.getElementById('formAddress').value = d.delivery_address || '';
         var isDelivery = d.delivery_method === 'delivery';
         document.getElementById('dmDelivery').checked = isDelivery;
         document.getElementById('dmPickup').checked = !isDelivery;
         toggleDelivery();
-        updateTotal();
         resetBorders();
+        updateTotal();
     }
 
     function openAddModal() {
@@ -706,6 +784,10 @@ require_once '../includes/navigation.php';
         if (!isValid) {
             e.preventDefault();
             alert('Please fill in all required fields marked with *.');
+            return;
+        }
+        if (checkOverlap()) {
+            e.preventDefault();
         }
     });
 
