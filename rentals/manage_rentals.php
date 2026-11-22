@@ -266,7 +266,7 @@ $bookings = array_map(fn($r) => [
     'code' => 'R-' . str_pad($r['rental_id'], 4, '0', STR_PAD_LEFT)
 ], $rentals);
 
-$statusBadge = ['Reserved' => 'Y', 'Active' => 'G', 'Overdue' => 'R', 'Returned' => 'G', 'Cancelled' => 'S'];
+$statusBadge = ['Reserved' => 'Y', 'Active' => 'G', 'Overdue' => 'R', 'Returned' => 'P', 'Cancelled' => 'S'];
 
 // 6. Navigation
 require_once '../includes/navigation.php';

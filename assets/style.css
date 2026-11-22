@@ -18,6 +18,8 @@
     --b: #1f5fd1;
     --sb: #e4e6ee;
     --s: #5b6182;
+    --pb: #ede4fb;
+    --p: #7a3fd1;
     box-sizing: border-box;
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px)
@@ -305,6 +307,11 @@ tr.m:hover td {
 .S {
     background: var(--sb);
     color: var(--s)
+}
+
+.P {
+    background: var(--pb);
+    color: var(--p)
 }
 
 .ic {
