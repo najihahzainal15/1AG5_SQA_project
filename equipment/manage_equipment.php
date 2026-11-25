@@ -32,6 +32,35 @@ if (empty($_SESSION['csrf_token'])) {
 }
 $csrf_token = $_SESSION['csrf_token'];
 
+function getDailyRateForDays(array $equipment, int $days): float
+{
+    $r1_3 = (float)($equipment['rental_rate'] ?? 0);
+    $r4_6 = ($equipment['rate_4_6'] !== null && $equipment['rate_4_6'] !== '') ? (float)$equipment['rate_4_6'] : $r1_3;
+    $r7_9 = ($equipment['rate_7_9'] !== null && $equipment['rate_7_9'] !== '') ? (float)$equipment['rate_7_9'] : $r4_6;
+    $r10p = ($equipment['rate_10_plus'] !== null && $equipment['rate_10_plus'] !== '') ? (float)$equipment['rate_10_plus'] : $r7_9;
+
+    if ($days >= 10) return $r10p;
+    if ($days >= 7)  return $r7_9;
+    if ($days >= 4)  return $r4_6;
+    return $r1_3;
+}
+
+function getAccessoryRate(array $item, int $days = 1, bool $withCamera = false): float
+{
+    $type = $item['pricing_type'] ?? 'daily';
+    $baseRate = (float)($item['rental_rate'] ?? 0);
+    $camRate = (isset($item['with_camera_rate']) && $item['with_camera_rate'] !== '' && $item['with_camera_rate'] !== null)
+        ? (float)$item['with_camera_rate']
+        : $baseRate;
+
+    if ($type === 'flat') {
+        return $baseRate;
+    }
+
+    $rate = $withCamera ? $camRate : $baseRate;
+    return $rate * max(1, $days);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Verify CSRF Token
@@ -50,7 +79,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $brand = trim($_POST['brand']);
         $category = $_POST['category'];
         $serial = trim($_POST['serial_number']);
-        $rental = $_POST['rental_rate'];
+        $rental = $_POST['rental_rate']; // 1-3 days rate / day (or standalone daily / flat rate)
+        $pricing_type = ($category === 'Accessories' && isset($_POST['pricing_type']) && $_POST['pricing_type'] === 'flat') ? 'flat' : 'daily';
+        $with_camera_rate = ($category === 'Accessories' && $pricing_type === 'daily' && isset($_POST['with_camera_rate']) && $_POST['with_camera_rate'] !== '')
+            ? $_POST['with_camera_rate']
+            : null;
+        $rate_4_6 = ($category !== 'Accessories' && isset($_POST['rate_4_6']) && $_POST['rate_4_6'] !== '') ? $_POST['rate_4_6'] : null;
+        $rate_7_9 = ($category !== 'Accessories' && isset($_POST['rate_7_9']) && $_POST['rate_7_9'] !== '') ? $_POST['rate_7_9'] : null;
+        $rate_10_plus = ($category !== 'Accessories' && isset($_POST['rate_10_plus']) && $_POST['rate_10_plus'] !== '') ? $_POST['rate_10_plus'] : null;
         $price = $_POST['purchase_price'];
         $supplier = $_POST['supplier_id'];
         $status = $_POST['equipment_status'];
@@ -62,6 +98,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($brand)) $errors[] = "Brand is required.";
         if (empty($serial)) $errors[] = "Serial number is required.";
         if (!is_numeric($rental) || $rental < 0) $errors[] = "Rental rate must be a positive number.";
+        if ($with_camera_rate !== null && (!is_numeric($with_camera_rate) || $with_camera_rate < 0)) {
+            $errors[] = "With-camera rate must be a positive number.";
+        }
+        foreach (['4–6 days' => $rate_4_6, '7–9 days' => $rate_7_9, '10+ days' => $rate_10_plus] as $tierLabel => $tierVal) {
+            if ($tierVal !== null && (!is_numeric($tierVal) || $tierVal < 0)) {
+                $errors[] = "Rental rate for $tierLabel must be a positive number.";
+            }
+        }
         if (!is_numeric($price) || $price < 0) $errors[] = "Purchase Price must be a positive number.";
         if (empty($supplier)) $errors[] = "Please select a supplier.";
 
@@ -70,18 +114,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $dupCheck = $pdo->prepare("SELECT equipment_id FROM equipment WHERE serial_number = ? AND equipment_id != ?");
             $dupCheck->execute([$serial, $id ?? 0]);
             if ($dupCheck->rowCount() > 0) {
-                $errors[] = "Integrity Error: The serial number '$serial' already exists in the system.";
+                $errors[] = "The serial number '$serial' already exists in the system.";
             }
         }
 
         if (empty($errors)) {
             if ($_POST['action'] == 'add') {
-                $stmt = $pdo->prepare("INSERT INTO equipment (equipment_name, brand, category, serial_number, rental_rate, purchase_price, supplier_id, equipment_status, specifications) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$name, $brand, $category, $serial, $rental, $price, $supplier, $status, $specs]);
+                $stmt = $pdo->prepare("
+                    INSERT INTO equipment (
+                        equipment_name, brand, category, serial_number,
+                        rental_rate, pricing_type, with_camera_rate,
+                        rate_4_6, rate_7_9, rate_10_plus,
+                        purchase_price, supplier_id, equipment_status, specifications
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([
+                    $name,
+                    $brand,
+                    $category,
+                    $serial,
+                    $rental,
+                    $pricing_type,
+                    $with_camera_rate,
+                    $rate_4_6,
+                    $rate_7_9,
+                    $rate_10_plus,
+                    $price,
+                    $supplier,
+                    $status,
+                    $specs
+                ]);
                 $success_msg = "Equipment added successfully.";
             } else {
-                $stmt = $pdo->prepare("UPDATE equipment SET equipment_name=?, brand=?, category=?, serial_number=?, rental_rate=?, purchase_price=?, supplier_id=?, equipment_status=?, specifications=? WHERE equipment_id=?");
-                $stmt->execute([$name, $brand, $category, $serial, $rental, $price, $supplier, $status, $specs, $id]);
+                $stmt = $pdo->prepare("
+                    UPDATE equipment SET
+                        equipment_name=?, brand=?, category=?, serial_number=?,
+                        rental_rate=?, pricing_type=?, with_camera_rate=?,
+                        rate_4_6=?, rate_7_9=?, rate_10_plus=?,
+                        purchase_price=?, supplier_id=?, equipment_status=?, specifications=?
+                    WHERE equipment_id=?
+                ");
+                $stmt->execute([
+                    $name,
+                    $brand,
+                    $category,
+                    $serial,
+                    $rental,
+                    $pricing_type,
+                    $with_camera_rate,
+                    $rate_4_6,
+                    $rate_7_9,
+                    $rate_10_plus,
+                    $price,
+                    $supplier,
+                    $status,
+                    $specs,
+                    $id
+                ]);
                 $success_msg = "Equipment updated successfully.";
             }
         }
@@ -117,7 +206,7 @@ require_once '../includes/navigation.php';
 <div class="hd">
     <div>
         <h1>Equipment <?= $isAdmin ? '' : '<span class="vo">View only</span>' ?></h1>
-        <div class="sub">Manage equipment details, specifications, categories, rental rates and purchase prices.</div>
+        <div class="sub">Manage equipment details, specifications, categories, tiered rental rates, accessory pricing, and purchase prices.</div>
     </div>
     <?php if ($isAdmin): ?>
         <button class="btn" onclick="openAddModal()">
@@ -181,7 +270,7 @@ require_once '../includes/navigation.php';
                 <th>ID</th>
                 <th>Equipment Name</th>
                 <th>Category</th>
-                <th>Rate / day</th>
+                <th>Rate</th>
                 <th>Supplier</th>
                 <th>Status</th>
                 <th></th>
@@ -190,14 +279,36 @@ require_once '../includes/navigation.php';
         <tbody>
             <?php if (count($equipment) > 0): ?>
                 <?php foreach ($equipment as $e): ?>
-                    <?php $rowId = "row-" . $e['equipment_id']; ?>
+                    <?php
+                    $rowId = "row-" . $e['equipment_id'];
+                    $pType = (($e['pricing_type'] ?? 'daily') === 'flat') ? 'flat' : 'daily';
+                    $r1_3  = (float)($e['rental_rate'] ?? 0);
+                    $hasCamRate = (isset($e['with_camera_rate']) && $e['with_camera_rate'] !== null && $e['with_camera_rate'] !== '');
+                    $rCam  = $hasCamRate ? (float)$e['with_camera_rate'] : $r1_3;
 
-                    <!-- Added class 'data-row' and data attributes for filtering -->
+                    $r4_6  = (isset($e['rate_4_6']) && $e['rate_4_6'] !== null && $e['rate_4_6'] !== '') ? (float)$e['rate_4_6'] : $r1_3;
+                    $r7_9  = (isset($e['rate_7_9']) && $e['rate_7_9'] !== null && $e['rate_7_9'] !== '') ? (float)$e['rate_7_9'] : $r4_6;
+                    $r10p  = (isset($e['rate_10_plus']) && $e['rate_10_plus'] !== null && $e['rate_10_plus'] !== '') ? (float)$e['rate_10_plus'] : $r7_9;
+                    ?>
+
                     <tr class="m data-row" data-category="<?= htmlspecialchars($e['category']) ?>" data-status="<?= strtolower($e['equipment_status']) ?>">
                         <td><span class="id">EQ-<?= str_pad($e['equipment_id'], 3, '0', STR_PAD_LEFT) ?></span></td>
                         <td><?= htmlspecialchars($e['equipment_name']) ?></td>
                         <td><?= htmlspecialchars($e['category']) ?></td>
-                        <td>RM <?= number_format($e['rental_rate'], 2) ?></td>
+                        <td>
+                            <?php if ($pType === 'flat'): ?>
+                                <div>RM <?= number_format($r1_3, 2) ?> <span style="color:#64748b; font-size:12px;">(flat)</span></div>
+                            <?php else: ?>
+                                <div>RM <?= number_format($r1_3, 2) ?> <span style="color:#64748b; font-size:12px;">(<?= $e['category'] === 'Accessories' ? 'daily' : '1–3d' ?>)</span></div>
+                                <?php if ($hasCamRate): ?>
+                                    <div style="color:#64748b; font-size:11px;">w/ Camera: RM<?= number_format($rCam, 2) ?></div>
+                                <?php elseif ($e['category'] !== 'Accessories'): ?>
+                                    <div style="color:#64748b; font-size:11px;">
+                                        4–6d: RM<?= number_format($r4_6, 0) ?> · 7–9d: RM<?= number_format($r7_9, 0) ?> · 10d+: RM<?= number_format($r10p, 0) ?>
+                                    </div>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </td>
                         <td><?= htmlspecialchars($e['supplier_name'] ?? 'N/A') ?></td>
                         <td>
                             <?php
@@ -232,25 +343,43 @@ require_once '../includes/navigation.php';
                         </td>
                     </tr>
 
-                    <!-- Expanded Row (Added class 'expand-row' to hide it during filtering) -->
+                    <!-- Expanded Row -->
                     <tr id="<?= $rowId ?>" class="expand-row" style="display: none; background-color: #f8fafc;">
                         <td colspan="7" style="padding: 15px 20px; border-bottom: 1px solid #e2e8f0;">
-                            <div style="display: flex; gap: 40px; align-items: center; font-size: 13px; color: #475569;">
-                                <div style="display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px;">
+                            <div style="display: flex; gap: 32px; align-items: flex-start; font-size: 13px; color: #475569; flex-wrap: wrap;">
+                                <div style="display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; flex-shrink: 0;">
                                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.8">
                                         <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" />
                                         <circle cx="12" cy="13" r="3.5" />
                                     </svg>
                                 </div>
-                                <div style="flex: 1;">
+                                <div style="flex: 1; min-width: 160px;">
                                     <div style="font-weight: 600; margin-bottom: 2px;"><?= htmlspecialchars($e['brand']) ?> · <?= htmlspecialchars($e['equipment_name']) ?></div>
                                     <div style="color: #94a3b8; font-size: 12px;">SN: <?= htmlspecialchars($e['serial_number'] ?? 'N/A') ?></div>
                                 </div>
-                                <div style="flex: 2;">
-                                    <div style="font-weight: 600; margin-bottom: 2px;">Specifications</div>
-                                    <div style="color: #64748b; font-size: 12px;"><?= htmlspecialchars($e['specifications'] ?? 'No specifications provided.') ?></div>
+                                <div style="flex: 1.5; min-width: 180px;">
+                                    <div style="font-weight: 600; margin-bottom: 4px;">Pricing Breakdown</div>
+                                    <div style="color: #64748b; font-size: 12px; line-height: 1.5;">
+                                        <?php if ($pType === 'flat'): ?>
+                                            Flat rate: <strong>RM <?= number_format($r1_3, 2) ?></strong>
+                                        <?php elseif ($e['category'] === 'Accessories'): ?>
+                                            Daily rate: <strong>RM <?= number_format($r1_3, 2) ?></strong>/day<br>
+                                            <?php if ($hasCamRate): ?>
+                                                With Camera: <strong>RM <?= number_format($rCam, 2) ?></strong>/day
+                                            <?php endif; ?>
+                                        <?php else: ?>
+                                            1–3 days: <strong>RM <?= number_format($r1_3, 2) ?></strong>/day<br>
+                                            4–6 days: <strong>RM <?= number_format($r4_6, 2) ?></strong>/day<br>
+                                            7–9 days: <strong>RM <?= number_format($r7_9, 2) ?></strong>/day<br>
+                                            10+ days: <strong>RM <?= number_format($r10p, 2) ?></strong>/day
+                                        <?php endif; ?>
+                                    </div>
                                 </div>
-                                <div style="flex: 1;">
+                                <div style="flex: 2; min-width: 200px;">
+                                    <div style="font-weight: 600; margin-bottom: 2px;">Specifications & Included Items</div>
+                                    <div style="color: #64748b; font-size: 12px; white-space: pre-line;"><?= htmlspecialchars($e['specifications'] ?? 'No specifications provided.') ?></div>
+                                </div>
+                                <div style="flex: 1; min-width: 130px;">
                                     <div style="font-weight: 600; margin-bottom: 2px;">Purchase Price</div>
                                     <div style="color: #64748b; font-size: 12px;">RM <?= number_format($e['purchase_price'], 2) ?></div>
                                 </div>
@@ -272,8 +401,8 @@ require_once '../includes/navigation.php';
 <!-- ========================================== -->
 
 <!-- Add / Edit Modal -->
-<div id="formModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.6); z-index:1000; align-items:center; justify-content:center;">
-    <div style="background:#fff; width:750px; max-width:95%; border-radius:12px; padding:30px; position:relative; font-family: 'Inter', sans-serif; box-shadow: 0 10px 25px rgba(0,0,0,0.1);">
+<div id="formModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.6); z-index:1000; align-items:center; justify-content:center; overflow-y:auto; padding:20px 0;">
+    <div style="background:#fff; width:750px; max-width:95%; border-radius:12px; padding:30px; position:relative; font-family: 'Inter', sans-serif; box-shadow: 0 10px 25px rgba(0,0,0,0.1); max-height:90vh; overflow-y:auto;">
 
         <h2 id="modalTitle" style="margin-top:0; font-size:22px; font-weight:700; color:#0f172a; margin-bottom:25px; font-family: 'Inter', sans-serif;">New · Equipment</h2>
 
@@ -304,6 +433,7 @@ require_once '../includes/navigation.php';
                     color: #0f172a;
                     font-family: 'Inter', sans-serif;
                     transition: border-color 0.2s, box-shadow 0.2s;
+                    box-sizing: border-box;
                 }
 
                 #formModal input:focus,
@@ -336,7 +466,7 @@ require_once '../includes/navigation.php';
                 </div>
                 <div>
                     <label>Category *</label>
-                    <select name="category" id="formCategory" required>
+                    <select name="category" id="formCategory" required onchange="updatePricingFields()">
                         <option value="Camera Body">Camera Body</option>
                         <option value="Audio">Audio</option>
                         <option value="Accessories">Accessories</option>
@@ -346,10 +476,38 @@ require_once '../includes/navigation.php';
                     <label>Serial Number *</label>
                     <input type="text" name="serial_number" id="formSerial" required maxlength="50">
                 </div>
+
                 <div>
-                    <label>Rental Rate (RM / day) *</label>
+                    <label id="baseRateLabel">1–3 Days Rate (RM / day) *</label>
                     <input type="number" step="0.01" min="0" name="rental_rate" id="formRental" required>
                 </div>
+
+                <div id="accessoryTypeGroup" style="display:none;">
+                    <label>Pricing Type *</label>
+                    <select name="pricing_type" id="formPricingType" onchange="updatePricingFields()">
+                        <option value="daily">Daily Rate</option>
+                        <option value="flat">Flat (One-off)</option>
+                    </select>
+                </div>
+
+                <div id="withCameraGroup" style="display:none;">
+                    <label>With Camera Rate (RM / day)</label>
+                    <input type="number" step="0.01" min="0" name="with_camera_rate" id="formWithCameraRate" placeholder="Optional (w/ camera)">
+                </div>
+
+                <div class="tier-field">
+                    <label>4–6 Days Rate (RM / day)</label>
+                    <input type="number" step="0.01" min="0" name="rate_4_6" id="formRate4_6" placeholder="Defaults to 1–3d rate">
+                </div>
+                <div class="tier-field">
+                    <label>7–9 Days Rate (RM / day)</label>
+                    <input type="number" step="0.01" min="0" name="rate_7_9" id="formRate7_9" placeholder="Defaults to 4–6d rate">
+                </div>
+                <div class="tier-field">
+                    <label>10+ Days Rate (RM / day)</label>
+                    <input type="number" step="0.01" min="0" name="rate_10_plus" id="formRate10Plus" placeholder="Defaults to 7–9d rate">
+                </div>
+
                 <div>
                     <label>Purchase Price (RM) *</label>
                     <input type="number" step="0.01" min="0" name="purchase_price" id="formPrice" required>
@@ -375,7 +533,7 @@ require_once '../includes/navigation.php';
             </div>
 
             <div style="margin-bottom:25px;">
-                <label>Specifications</label>
+                <label>Specifications & Included Items</label>
                 <textarea name="specifications" id="formSpecs" rows="4" style="resize:vertical;"></textarea>
             </div>
 
@@ -431,15 +589,39 @@ require_once '../includes/navigation.php';
         document.getElementById(id).style.display = 'none';
     }
 
+    function updatePricingFields() {
+        const category = document.getElementById('formCategory').value;
+        const pricingType = document.getElementById('formPricingType').value;
+        const isAccessory = (category === 'Accessories');
+
+        document.getElementById('accessoryTypeGroup').style.display = isAccessory ? 'block' : 'none';
+        document.getElementById('withCameraGroup').style.display = (isAccessory && pricingType === 'daily') ? 'block' : 'none';
+
+        document.querySelectorAll('.tier-field').forEach(el => {
+            el.style.display = isAccessory ? 'none' : 'block';
+        });
+
+        const baseLabel = document.getElementById('baseRateLabel');
+        if (!isAccessory) {
+            baseLabel.innerText = '1–3 Days Rate (RM / day) *';
+        } else if (pricingType === 'flat') {
+            baseLabel.innerText = 'Flat Rate (RM) *';
+        } else {
+            baseLabel.innerText = 'Daily Rate (RM / day) *';
+        }
+    }
+
     function openAddModal() {
         document.getElementById('modalTitle').innerText = 'New Equipment';
         document.getElementById('formAction').value = 'add';
         document.getElementById('equipmentForm').reset();
         document.getElementById('formId').value = '';
+        document.getElementById('formPricingType').value = 'daily';
 
         var inputs = document.querySelectorAll('#formModal input, #formModal select, #formModal textarea');
         inputs.forEach(input => input.style.borderColor = '#cbd5e1');
 
+        updatePricingFields();
         openModal('formModal');
     }
 
@@ -451,7 +633,12 @@ require_once '../includes/navigation.php';
         document.getElementById('formName').value = data.equipment_name;
         document.getElementById('formBrand').value = data.brand;
         document.getElementById('formSerial').value = data.serial_number;
-        document.getElementById('formRental').value = data.rental_rate;
+        document.getElementById('formPricingType').value = data.pricing_type || 'daily';
+        document.getElementById('formRental').value = data.rental_rate ?? '';
+        document.getElementById('formWithCameraRate').value = data.with_camera_rate ?? '';
+        document.getElementById('formRate4_6').value = data.rate_4_6 ?? '';
+        document.getElementById('formRate7_9').value = data.rate_7_9 ?? '';
+        document.getElementById('formRate10Plus').value = data.rate_10_plus ?? '';
         document.getElementById('formPrice').value = data.purchase_price;
         document.getElementById('formSpecs').value = data.specifications || '';
 
@@ -475,6 +662,7 @@ require_once '../includes/navigation.php';
         var inputs = document.querySelectorAll('#formModal input, #formModal select, #formModal textarea');
         inputs.forEach(input => input.style.borderColor = '#cbd5e1');
 
+        updatePricingFields();
         openModal('formModal');
     }
 
@@ -503,23 +691,19 @@ require_once '../includes/navigation.php';
             const statusTerm = statusFilter.value.toLowerCase();
 
             tableRows.forEach(row => {
-                // Get data from row
                 const rowText = row.innerText.toLowerCase();
                 const rowCategory = row.getAttribute('data-category').toLowerCase();
                 const rowStatus = row.getAttribute('data-status').toLowerCase();
 
-                // Check conditions
                 const matchesSearch = rowText.includes(searchTerm);
                 const matchesCategory = categoryTerm === "" || rowCategory === categoryTerm;
                 const matchesStatus = statusTerm === "" || rowStatus === statusTerm;
 
-                // Show/hide row
                 if (matchesSearch && matchesCategory && matchesStatus) {
-                    row.style.display = ''; // Show
+                    row.style.display = '';
                 } else {
-                    row.style.display = 'none'; // Hide
+                    row.style.display = 'none';
 
-                    // Also hide the expanded row underneath it if it's open
                     const nextRow = row.nextElementSibling;
                     if (nextRow && nextRow.classList.contains('expand-row')) {
                         nextRow.style.display = 'none';
